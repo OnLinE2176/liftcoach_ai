@@ -335,4 +335,5 @@ elif page == "Analyze a Lift":
 
 st.sidebar.info(
     "**Disclaimer:** This tool is for educational purposes and should not replace advice from a qualified human coach."
-)```
+)
+
