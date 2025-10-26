@@ -1,0 +1,16 @@
+# Instruct pip to use the PyTorch index for CPU-specific versions
+--index-url https://download.pytorch.org/whl/cpu
+
+# Core ML Libraries (CPU versions)
+torch
+torchvision
+torchaudio
+
+# Computer Vision and App Framework
+# Use the "headless" version for servers as it's smaller and avoids GUI dependencies
+opencv-python-headless
+streamlit
+ultralytics
+
+# Numerical Processing (will be installed as a dependency, but good to list)
+numpy
