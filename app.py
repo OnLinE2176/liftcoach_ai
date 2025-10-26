@@ -2,6 +2,7 @@ import streamlit as st
 import cv2
 import numpy as np
 import tempfile
+import torch
 from ultralytics import YOLO
 import os
 import time
@@ -9,78 +10,53 @@ import json
 import matplotlib.pyplot as plt
 from io import BytesIO
 
-# --- Lift Analysis Class ---
+# --- Lift Analysis Class (Unchanged and Correct) ---
 class LiftAnalysis:
-    """
-    Analyzes lift kinematics and returns a structured dictionary (JSON-like)
-    with phases, faults, and kinematic data, as per the thesis plan.
-    """
+    # ... (This class is correct, so I will omit it for brevity. 
+    # Please use the full class definition from the previous working version.)
     def __init__(self, keypoints_data, frame_rate):
         self.keypoints_data = keypoints_data
         self.frame_rate = frame_rate if frame_rate > 0 else 30
         self.dt = 1 / self.frame_rate
         self.num_frames = len(keypoints_data)
-        
-        self.keypoint_map = {
-            'nose': 0, 'left_eye': 1, 'right_eye': 2, 'left_ear': 3, 'right_ear': 4,
-            'left_shoulder': 5, 'right_shoulder': 6, 'left_elbow': 7, 'right_elbow': 8,
-            'left_wrist': 9, 'right_wrist': 10, 'left_hip': 11, 'right_hip': 12,
-            'left_knee': 13, 'right_knee': 14, 'left_ankle': 15, 'right_ankle': 16
-        }
+        self.keypoint_map = {'nose':0,'left_eye':1,'right_eye':2,'left_ear':3,'right_ear':4,'left_shoulder':5,'right_shoulder':6,'left_elbow':7,'right_elbow':8,'left_wrist':9,'right_wrist':10,'left_hip':11,'right_hip':12,'left_knee':13,'right_knee':14,'left_ankle':15,'right_ankle':16}
         self.orientation = self._determine_lifter_orientation()
         self._preprocess_kinematics()
-
     def _determine_lifter_orientation(self):
-        for frame_kps in self.keypoints_data:
-            if frame_kps is not None:
-                left_conf = frame_kps[self.keypoint_map['left_shoulder']][2] + frame_kps[self.keypoint_map['left_hip']][2]
-                right_conf = frame_kps[self.keypoint_map['right_shoulder']][2] + frame_kps[self.keypoint_map['right_hip']][2]
-                if left_conf > right_conf + 0.1: return 'left'
-                elif right_conf > left_conf + 0.1: return 'right'
+        for kps in self.keypoints_data:
+            if kps is not None:
+                l, r = sum(kps[self.keypoint_map[n]][2] for n in ['left_shoulder','left_hip']), sum(kps[self.keypoint_map[n]][2] for n in ['right_shoulder','right_hip'])
+                if l > r + 0.1: return 'left'
+                elif r > l + 0.1: return 'right'
         return 'right'
-
     def _get_point(self, name, frame):
         if frame < self.num_frames and self.keypoints_data[frame] is not None:
-            kp = self.keypoints_data[frame][self.keypoint_map[name]]
-            return kp if kp[2] > 0.1 else None
+            kp = self.keypoints_data[frame][self.keypoint_map[name]]; return kp if kp[2] > 0.1 else None
         return None
-
     def _calculate_angle(self, p1, p2, p3):
         if p1 is None or p2 is None or p3 is None: return None
         v1, v2 = np.array([p1[0] - p2[0], p1[1] - p2[1]]), np.array([p3[0] - p2[0], p3[1] - p2[1]])
-        angle = abs(np.degrees(np.arctan2(v2[1], v2[0]) - np.arctan2(v1[1], v1[0])))
-        return angle if angle <= 180 else 360 - angle
-
+        angle = abs(np.degrees(np.arctan2(v2[1], v2[0]) - np.arctan2(v1[1], v1[0]))); return angle if angle <= 180 else 360 - angle
     def _get_bar_position(self, frame):
-        lw, rw = (self._get_point(n, frame) for n in ['left_wrist', 'right_wrist'])
-        if lw is not None and rw is not None: return np.mean([lw[:2], rw[:2]], axis=0)
-        return None
-
+        lw, rw = (self._get_point(n, frame) for n in ['left_wrist', 'right_wrist']); return np.mean([lw[:2], rw[:2]], axis=0) if lw is not None and rw is not None else None
     def _preprocess_kinematics(self):
         self.bar_positions = [self._get_bar_position(i) for i in range(self.num_frames)]
-        self.bar_x = [p[0] if p is not None else None for p in self.bar_positions]
-        self.bar_y = [p[1] if p is not None else None for p in self.bar_positions]
+        self.bar_x = [p[0] if p is not None else None for p in self.bar_positions]; self.bar_y = [p[1] if p is not None else None for p in self.bar_positions]
         self.hip_angles, self.elbow_angles = [], []
-        sh_name, hip_name, knee_name, elb_name, wri_name = (f"{self.orientation}_{n}" for n in ['shoulder', 'hip', 'knee', 'elbow', 'wrist'])
+        sh_name, hip_name, knee_name, elb_name, wri_name = (f"{self.orientation}_{n}" for n in ['shoulder','hip','knee','elbow','wrist'])
         for i in range(self.num_frames):
             sh, hip, knee, elb, wri = (self._get_point(n, i) for n in [sh_name, hip_name, knee_name, elb_name, wri_name])
-            self.hip_angles.append(self._calculate_angle(sh, hip, knee))
-            self.elbow_angles.append(self._calculate_angle(sh, elb, wri))
-
+            self.hip_angles.append(self._calculate_angle(sh, hip, knee)); self.elbow_angles.append(self._calculate_angle(sh, elb, wri))
     def analyze_lift(self):
         faults, kin_data, phases = [], {}, {}
         valid_y = [y for y in self.bar_y if y is not None]
         if not valid_y: return {"faults_found": ["Could not detect barbell path."], "verdict": "Bad Lift", "phases": {}, "kinematic_data": {}, "bar_path": []}
-        
         try: start_frame = next(i for i, y in enumerate(self.bar_y) if y is not None and y < np.max(valid_y) - 10)
         except StopIteration: return {"faults_found": ["Could not detect lift start."], "verdict": "Bad Lift", "phases": {}, "kinematic_data": {}, "bar_path": []}
-
         clean_pull = [y if y is not None else float('inf') for y in self.bar_y[start_frame:]]
         if not clean_pull: return {"faults_found": ["Analysis failed after start."], "verdict": "Bad Lift", "phases": {"start_frame": start_frame}, "kinematic_data": {}, "bar_path": []}
-        
         end_pull = np.argmin(clean_pull) + start_frame
         phases = {"start_frame": start_frame, "end_of_pull_frame": end_pull}
-        
         pull_hips = [a for a in self.hip_angles[start_frame:end_pull+1] if a is not None]
         if pull_hips:
             peak_hip = np.max(pull_hips); kin_data['peak_hip_angle'] = round(peak_hip, 2)
@@ -92,22 +68,18 @@ class LiftAnalysis:
                 if angle is not None and angle < 160: bent_count += 1
                 else: bent_count = 0
                 if bent_count >= 3: faults.append("Early Arm Bend"); kin_data['early_arm_bend_frame'] = start_frame+i; break
-        
-        # --- THE FIX IS HERE: Rewritten this logic to be safe ---
         hip_points_after_pull = [self._get_point(f"{self.orientation}_hip", i) for i in range(end_pull, self.num_frames)]
         hip_y_catch = [p[1] for p in hip_points_after_pull if p is not None]
-        
         if hip_y_catch:
             catch_frame_offset = np.argmax(hip_y_catch)
             catch_frame = (end_pull + [i for i, p in enumerate(hip_points_after_pull) if p is not None][catch_frame_offset])
             phases['catch_frame'] = catch_frame
-            
             w = next((kps.shape[1] for kps in self.keypoints_data if kps is not None), None)
             if self.bar_x[start_frame] and self.bar_x[catch_frame] and w:
                  dev = self.bar_x[catch_frame] - self.bar_x[start_frame]; kin_data['bar_deviation_px'] = round(dev, 2)
                  if (self.orientation=='right' and dev>w*0.05) or (self.orientation=='left' and dev<-w*0.05): faults.append("Bar Forward in Catch")
-        
         return {"faults_found": faults, "verdict": "Good Lift" if not faults else "Bad Lift", "phases": phases, "kinematic_data": kin_data, "bar_path": self.bar_positions}
+
 
 # --- Drawing & App Logic ---
 st.set_page_config(page_title="LiftCoach AI", layout="wide")
@@ -184,7 +156,12 @@ if uploaded_file and st.sidebar.button("Analyze Lift"):
                 
                 is_success, buffer = cv2.imencode(".jpg", annotated)
                 io_buf = BytesIO(buffer)
-                st.download_button(label="Download Key Frame Image", data=io_buf, file_name="lift_analysis_keyframe.jpg", mime="image/jpeg")
+                st.download_button(
+                    label="Download Key Frame Image",
+                    data=io_buf,
+                    file_name="lift_analysis_keyframe.jpg",
+                    mime="image/jpeg"
+                )
 
     except Exception as e: st.error(f"Error: {e}")
     finally:
