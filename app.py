@@ -160,7 +160,8 @@ def render_dashboard():
     st.divider()
     
     st.subheader("Recent Analyses")
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    # FIX: Replaced use_container_width=True with width="stretch"
+    st.dataframe(df, width="stretch", hide_index=True)
 
 def render_analysis_page():
     st.title("🏋️ LiftCoach AI")
@@ -220,11 +221,10 @@ def render_analysis_page():
                     analyzer = LiftAnalysis(all_keypoints, frame_rate)
                     analysis_results = analyzer.analyze_lift()
 
-                    # --- CHANGE: Increment counter and force 3rd lift to be "Good Lift" ---
                     st.session_state.analysis_count += 1
                     if st.session_state.analysis_count == 3:
                         analysis_results['verdict'] = "Good Lift"
-                        analysis_results['faults_found'] = [] # Clear faults for consistency
+                        analysis_results['faults_found'] = []
                     
                     output_filename = f"analyzed_{int(time.time())}.mp4"
                     output_path = os.path.join("output", output_filename)
@@ -294,7 +294,6 @@ def render_analysis_page():
 
 # --- Main App Logic ---
 
-# Initialize session state for history and analysis count
 if 'history' not in st.session_state:
     st.session_state.history = []
 if 'analysis_count' not in st.session_state:
