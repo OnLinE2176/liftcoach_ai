@@ -53,35 +53,75 @@ class LiftAnalysis:
             self.hip_angles.append(self._calculate_angle(sh,hip,knee))
             self.elbow_angles.append(self._calculate_angle(sh,elb,wri))
     def analyze_lift(self):
-        faults_found,kinematic_data,phases={},{},{}
+        # --- THIS IS THE FIX ---
+        faults_found, kinematic_data, phases = [], {}, {} # Initialize faults_found as a list
+        # --- END OF FIX ---
+        
         valid_bar_y = [y for y in self.bar_y if y is not None]
-        if not valid_bar_y: return {"faults_found":["Could not detect barbell path."],"verdict":"Bad Lift","phases":{},"kinematic_data":{}}
-        floor_y=np.max(valid_bar_y)
-        try:start_frame=next(i for i,y in enumerate(self.bar_y) if y is not None and y<floor_y-10)
-        except StopIteration:return {"faults_found":["Could not detect lift start."],"verdict":"Bad Lift","phases":{},"kinematic_data":{}}
-        clean_bar_y_pull=[y if y is not None else float('inf') for y in self.bar_y[start_frame:]]
-        if not clean_bar_y_pull:return {"faults_found":["Analysis failed after start."],"verdict":"Bad Lift","phases":{"start_frame":start_frame},"kinematic_data":{}}
-        end_of_pull_frame=np.argmin(clean_bar_y_pull)+start_frame
-        phases={"start_frame":start_frame,"end_of_pull_frame":end_of_pull_frame}
-        pull_phase_hip_angles=self.hip_angles[start_frame:end_of_pull_frame+1]
-        valid_pull_hip_angles=[a for a in pull_phase_hip_angles if a is not None]
-        if not valid_pull_hip_angles:faults_found.append("Could not analyze hip extension.")
+        if not valid_bar_y:
+            return {"faults_found": ["Could not detect barbell path."], "verdict": "Bad Lift", "phases": {}, "kinematic_data": {}}
+        
+        floor_y = np.max(valid_bar_y)
+        try: start_frame = next(i for i, y in enumerate(self.bar_y) if y is not None and y < floor_y - 10)
+        except StopIteration:
+            return {"faults_found": ["Could not detect lift start."], "verdict": "Bad Lift", "phases": {}, "kinematic_data": {}}
+
+        clean_bar_y_pull = [y if y is not None else float('inf') for y in self.bar_y[start_frame:]]
+        if not clean_bar_y_pull:
+            return {"faults_found": ["Analysis failed after start."], "verdict": "Bad Lift", "phases": {"start_frame": start_frame}, "kinematic_data": {}}
+        
+        end_of_pull_frame = np.argmin(clean_bar_y_pull) + start_frame
+        phases = {"start_frame": start_frame, "end_of_pull_frame": end_of_pull_frame}
+
+        pull_phase_hip_angles = self.hip_angles[start_frame:end_of_pull_frame + 1]
+        valid_pull_hip_angles = [a for a in pull_phase_hip_angles if a is not None]
+
+        if not valid_pull_hip_angles:
+            faults_found.append("Could not analyze hip extension.")
         else:
-            peak_hip_angle=np.max(valid_pull_hip_angles)
-            kinematic_data['peak_hip_angle']=round(peak_hip_angle,2)
-            if peak_hip_angle<170:faults_found.append("Incomplete Hip Extension")
-            peak_hip_angle_index_in_pull=np.argmax([a if a is not None else -1 for a in pull_phase_hip_angles])
-            bent_arm_counter,persistence_threshold=0,3
+            peak_hip_angle = np.max(valid_pull_hip_angles)
+            kinematic_data['peak_hip_angle'] = round(peak_hip_angle, 2)
+            if peak_hip_angle < 170:
+                faults_found.append("Incomplete Hip Extension")
+
+            peak_hip_angle_index_in_pull = np.argmax([a if a is not None else -1 for a in pull_phase_hip_angles])
+            bent_arm_counter, persistence_threshold = 0, 3
             for i in range(peak_hip_angle_index_in_pull):
-                elbow_angle=self.elbow_angles[start_frame+i]
-                if elbow_angle is not None and elbow_angle<160:bent_arm_counter+=1
-                else:bent_arm_counter=0
-                if bent_arm_counter>=persistence_threshold:
+                elbow_angle = self.elbow_angles[start_frame + i]
+                if elbow_angle is not None and elbow_angle < 160:
+                    bent_arm_counter += 1
+                else: bent_arm_counter = 0
+                if bent_arm_counter >= persistence_threshold:
                     faults_found.append("Early Arm Bend")
-                    kinematic_data['early_arm_bend_frame']=start_frame+i
+                    kinematic_data['early_arm_bend_frame'] = start_frame + i
                     break
-        verdict="Good Lift" if not faults_found else "Bad Lift"
-        return {"faults_found":faults_found,"verdict":verdict,"phases":phases,"kinematic_data":kinematic_data}
+        
+        # This part of the logic remains the same
+        hip_y = [p[1] if p is not None else None for p in [self._get_point(f"{self.orientation}_hip", i) for i in range(self.num_frames)]]
+        hip_y_after_pull = [y for y in hip_y[end_of_pull_frame:] if y is not None]
+        if hip_y_after_pull:
+            clean_hip_y_after_pull = [y if y is not None else -1 for y in hip_y[end_of_pull_frame:]]
+            catch_frame = np.argmax(clean_hip_y_after_pull) + end_of_pull_frame
+            phases['catch_frame'] = catch_frame
+            
+            bar_x_start = self.bar_x[start_frame]
+            bar_x_catch = self.bar_x[catch_frame]
+            
+            # Use a safe way to get frame_width
+            frame_width = None
+            for kps in self.keypoints_data:
+                if kps is not None:
+                    frame_width = kps.shape[1]
+                    break
+            
+            if bar_x_start is not None and bar_x_catch is not None and frame_width is not None:
+                horizontal_deviation = bar_x_catch - bar_x_start
+                kinematic_data['horizontal_bar_deviation_pixels'] = round(horizontal_deviation, 2)
+                if horizontal_deviation > (0.05 * frame_width):
+                    faults_found.append("Bar Forward in Catch")
+        
+        verdict = "Good Lift" if not faults_found else "Bad Lift"
+        return {"faults_found": faults_found, "verdict": verdict, "phases": phases, "kinematic_data": kinematic_data, "bar_path": self.bar_positions}
 
 # --- Drawing Utilities ---
 def draw_feedback_on_frame(frame, verdict):
@@ -224,3 +264,4 @@ if uploaded_file:
 st.sidebar.info(
     "**Disclaimer:** This tool is for educational purposes and should not replace advice from a qualified human coach."
 )
+
