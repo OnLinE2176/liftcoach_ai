@@ -1,20 +1,9 @@
-# Core App Framework
-streamlit
-
-# Computer Vision
-# Use the "headless" version for servers as it's smaller and avoids GUI dependencies
-opencv-python-headless
-
-# AI Model Library
-ultralytics
-
-# Numerical Processing & Plotting
-numpy
-matplotlib
-
-# Core ML Libraries (CPU versions)
-# Tell pip to look in the PyTorch index as an EXTRA source for these specific packages
 --find-links https://download.pytorch.org/whl/cpu
 torch
 torchvision
 torchaudio
+opencv-python-headless
+streamlit
+ultralytics
+numpy
+matplotlib
