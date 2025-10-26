@@ -2,22 +2,24 @@ import streamlit as st
 import cv2
 import numpy as np
 import tempfile
+import torch
 from ultralytics import YOLO
 import os
 import time
-import json
-import matplotlib.pyplot as plt
+import json 
 
-# --- Lift Analysis Class (Thesis Version) ---
+# --- Create Output Directory ---
+os.makedirs("output", exist_ok=True)
+
+# --- Lift Analysis Class ---
 class LiftAnalysis:
-    """
-    Analyzes lift kinematics, detects IWF rule violations, and generates 
-    structured diagnostic data for visualization.
-    """
+    
     def __init__(self, keypoints_data, frame_rate):
         self.keypoints_data = keypoints_data
         self.frame_rate = frame_rate if frame_rate > 0 else 30
+        self.dt = 1 / self.frame_rate
         self.num_frames = len(keypoints_data)
+        
         self.keypoint_map = {
             'nose': 0, 'left_eye': 1, 'right_eye': 2, 'left_ear': 3, 'right_ear': 4,
             'left_shoulder': 5, 'right_shoulder': 6, 'left_elbow': 7, 'right_elbow': 8,
@@ -30,8 +32,8 @@ class LiftAnalysis:
     def _determine_lifter_orientation(self):
         for frame_kps in self.keypoints_data:
             if frame_kps is not None:
-                left_conf = sum(frame_kps[self.keypoint_map[n]][2] for n in ['left_shoulder', 'left_hip'])
-                right_conf = sum(frame_kps[self.keypoint_map[n]][2] for n in ['right_shoulder', 'right_hip'])
+                left_conf = frame_kps[self.keypoint_map['left_shoulder']][2] + frame_kps[self.keypoint_map['left_hip']][2]
+                right_conf = frame_kps[self.keypoint_map['right_shoulder']][2] + frame_kps[self.keypoint_map['right_hip']][2]
                 if left_conf > right_conf + 0.1: return 'left'
                 elif right_conf > left_conf + 0.1: return 'right'
         return 'right'
@@ -44,22 +46,17 @@ class LiftAnalysis:
 
     def _calculate_angle(self, p1, p2, p3):
         if p1 is None or p2 is None or p3 is None: return None
-        v1 = np.array([p1[0] - p2[0], p1[1] - p2[1]])
-        v2 = np.array([p3[0] - p2[0], p3[1] - p2[1]])
+        v1, v2 = np.array([p1[0] - p2[0], p1[1] - p2[1]]), np.array([p3[0] - p2[0], p3[1] - p2[1]])
         angle = abs(np.degrees(np.arctan2(v2[1], v2[0]) - np.arctan2(v1[1], v1[0])))
         return angle if angle <= 180 else 360 - angle
 
     def _get_bar_position(self, frame):
-        lw = self._get_point('left_wrist', frame)
-        rw = self._get_point('right_wrist', frame)
-        if lw is not None and rw is not None:
-            return np.mean([lw[:2], rw[:2]], axis=0)
+        lw, rw = (self._get_point(n, frame) for n in ['left_wrist', 'right_wrist'])
+        if lw is not None and rw is not None: return np.mean([lw[:2], rw[:2]], axis=0)
         return None
 
     def _preprocess_kinematics(self):
-        self.bar_positions = [self._get_bar_position(i) for i in range(self.num_frames)]
-        self.bar_x = [p[0] if p is not None else None for p in self.bar_positions]
-        self.bar_y = [p[1] if p is not None else None for p in self.bar_positions]
+        self.bar_y = [p[1] if p is not None else None for p in [self._get_bar_position(i) for i in range(self.num_frames)]]
         self.hip_angles, self.elbow_angles = [], []
         sh_name, hip_name, knee_name, elb_name, wri_name = (f"{self.orientation}_{n}" for n in ['shoulder', 'hip', 'knee', 'elbow', 'wrist'])
         for i in range(self.num_frames):
@@ -68,180 +65,176 @@ class LiftAnalysis:
             self.elbow_angles.append(self._calculate_angle(sh, elb, wri))
 
     def analyze_lift(self):
-        faults_found, kinematic_data, phases = [], {}, {}
+        faults_found = []
+        kinematic_data = {}
+        
         valid_bar_y = [y for y in self.bar_y if y is not None]
-        if not valid_bar_y: return {"faults_found": ["Could not detect barbell path."], "verdict": "Bad Lift", "phases": {}, "kinematic_data": {}, "bar_path": []}
+        if not valid_bar_y:
+            return {"faults_found": ["Could not detect barbell path."], "verdict": "Bad Lift", "phases": {}, "kinematic_data": {}}
         
         floor_y = np.max(valid_bar_y)
         try: start_frame = next(i for i, y in enumerate(self.bar_y) if y is not None and y < floor_y - 10)
-        except StopIteration: return {"faults_found": ["Could not detect lift start."], "verdict": "Bad Lift", "phases": {}, "kinematic_data": {}, "bar_path": []}
+        except StopIteration:
+            return {"faults_found": ["Could not detect lift start."], "verdict": "Bad Lift", "phases": {}, "kinematic_data": {}}
 
         clean_bar_y_pull = [y if y is not None else float('inf') for y in self.bar_y[start_frame:]]
-        if not clean_bar_y_pull: return {"faults_found": ["Analysis failed after start."], "verdict": "Bad Lift", "phases": {"start_frame": start_frame}, "kinematic_data": {}, "bar_path": []}
+        if not clean_bar_y_pull:
+            return {"faults_found": ["Analysis failed after start."], "verdict": "Bad Lift", "phases": {"start_frame": start_frame}, "kinematic_data": {}}
         
         end_of_pull_frame = np.argmin(clean_bar_y_pull) + start_frame
         phases = {"start_frame": start_frame, "end_of_pull_frame": end_of_pull_frame}
 
-        # 1. Incomplete Extension
-        pull_hip_angles = [a for a in self.hip_angles[start_frame:end_of_pull_frame+1] if a is not None]
-        if pull_hip_angles:
-            peak_hip = np.max(pull_hip_angles)
-            kinematic_data['peak_hip_angle'] = round(peak_hip, 2)
-            if peak_hip < 170: faults_found.append("Incomplete Hip Extension")
-        
-        # 2. Early Arm Bend
-        if pull_hip_angles:
-            peak_hip_idx = np.argmax([a if a is not None else -1 for a in self.hip_angles[start_frame:end_of_pull_frame+1]])
-            bent_count = 0
-            for i in range(peak_hip_idx):
-                angle = self.elbow_angles[start_frame + i]
-                if angle is not None and angle < 160: bent_count += 1
-                else: bent_count = 0
-                if bent_count >= 3:
+        pull_phase_hip_angles = self.hip_angles[start_frame:end_of_pull_frame + 1]
+        valid_pull_hip_angles = [a for a in pull_phase_hip_angles if a is not None]
+
+        if not valid_pull_hip_angles:
+            faults_found.append("Could not analyze hip extension.")
+        else:
+            peak_hip_angle = np.max(valid_pull_hip_angles)
+            kinematic_data['peak_hip_angle'] = round(peak_hip_angle, 2)
+            if peak_hip_angle < 170:
+                faults_found.append("Incomplete Hip Extension")
+
+            peak_hip_angle_index_in_pull = np.argmax([a if a is not None else -1 for a in pull_phase_hip_angles])
+            bent_arm_counter, persistence_threshold = 0, 3
+            for i in range(peak_hip_angle_index_in_pull):
+                elbow_angle = self.elbow_angles[start_frame + i]
+                if elbow_angle is not None and elbow_angle < 160:
+                    bent_arm_counter += 1
+                else: bent_arm_counter = 0
+                if bent_arm_counter >= persistence_threshold:
                     faults_found.append("Early Arm Bend")
                     kinematic_data['early_arm_bend_frame'] = start_frame + i
                     break
-
-        # 3. Bar Forward in Catch (Thesis Feature)
-        hip_y = [p[1] if p is not None else None for p in [self._get_point(f"{self.orientation}_hip", i) for i in range(self.num_frames)]]
-        hip_y_catch = [y if y is not None else -1 for y in hip_y[end_of_pull_frame:]]
-        if hip_y_catch:
-            catch_frame = np.argmax(hip_y_catch) + end_of_pull_frame
-            phases['catch_frame'] = catch_frame
-            
-            # Safe frame width check
-            frame_width = next((kps.shape[1] for kps in self.keypoints_data if kps is not None), None)
-            
-            if self.bar_x[start_frame] and self.bar_x[catch_frame] and frame_width:
-                 dev = self.bar_x[catch_frame] - self.bar_x[start_frame]
-                 kinematic_data['bar_deviation_px'] = round(dev, 2)
-                 # If bar is >5% of screen width forward from start position
-                 if (self.orientation == 'right' and dev > frame_width * 0.05) or \
-                    (self.orientation == 'left' and dev < -frame_width * 0.05):
-                     faults_found.append("Bar Forward in Catch")
-
-        return {"faults_found": faults_found, "verdict": "Good Lift" if not faults_found else "Bad Lift", "phases": phases, "kinematic_data": kinematic_data, "bar_path": self.bar_positions}
+        
+        verdict = "Good Lift" if not faults_found else "Bad Lift"
+        return {"faults_found": faults_found, "verdict": verdict, "phases": phases, "kinematic_data": kinematic_data}
 
 # --- Drawing Utilities ---
-def draw_feedback(frame, verdict):
-    color = (0, 255, 0) if verdict == "Good Lift" else (0, 0, 255)
-    cv2.putText(frame, verdict, (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.5, color, 3, cv2.LINE_AA)
+def draw_feedback_on_frame(frame, verdict):
+    verdict_color = (0, 255, 0) if verdict == "Good Lift" else (0, 0, 255)
+    cv2.putText(frame, verdict, (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.5, verdict_color, 3, cv2.LINE_AA)
     return frame
 
-def get_iou(box1, box2):
+# --- Helper for Bounding Box Overlap ---
+def calculate_iou(box1, box2):
     x1, y1, x2, y2 = max(box1[0], box2[0]), max(box1[1], box2[1]), min(box1[2], box2[2]), min(box1[3], box2[3])
-    inter = max(0, x2 - x1) * max(0, y2 - y1)
-    union = (box1[2]-box1[0])*(box1[3]-box1[1]) + (box2[2]-box2[0])*(box2[3]-box2[1]) - inter
-    return inter / union if union > 0 else 0
+    intersection = max(0, x2 - x1) * max(0, y2 - y1)
+    area1, area2 = (box1[2] - box1[0]) * (box1[3] - box1[1]), (box2[2] - box2[0]) * (box2[3] - box2[1])
+    union = area1 + area2 - intersection
+    return intersection / union if union > 0 else 0
 
-# --- Streamlit App ---
+# --- Streamlit Application ---
+
 st.set_page_config(page_title="LiftCoach AI", layout="wide")
-st.title("🏋️ LiftCoach AI - Thesis Implementation")
-st.write("Automated technical analysis for Olympic Weightlifting based on IWF standards.")
+st.title("🏋️ LiftCoach AI")
+st.write("A computer vision tool for analyzing Olympic Weightlifting technique.")
 
 @st.cache_resource
-def load_model(): return YOLO('yolov8n-pose.pt')
+def load_model():
+    return YOLO('yolov8n-pose.pt')
+
 model = load_model()
 
-st.sidebar.header("Video Input")
-uploaded_file = st.sidebar.file_uploader("Upload a lift video (MP4/MOV)", type=["mp4", "mov", "avi"])
+st.sidebar.header("Input Options")
+uploaded_file = st.sidebar.file_uploader("Choose a video file...", type=["mp4", "mov", "avi"])
 
-if uploaded_file and st.sidebar.button("Analyze Lift"):
-    tfile = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
-    tfile.write(uploaded_file.read())
-    video_path = tfile.name
+if uploaded_file:
+    process_button = st.sidebar.button("Analyze Lift", key="process")
+    if process_button:
+        tfile = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
+        tfile.write(uploaded_file.read())
+        video_path = tfile.name
 
-    cap = None
-    try:
-        cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened(): raise Exception("Error opening video file.")
+        cap, writer = None, None
+        try:
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened(): raise Exception("Error: Could not open video file.")
 
-        st.info("Phase 1/3: Tracking athlete & extracting kinematics...")
-        prog_bar = st.progress(0)
-        all_kps, raw_frames, target_box = [], [], None
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            st.info("Phase 1: Tracking athlete and analyzing frames...")
+            progress_bar = st.progress(0, text="Analyzing Frames...")
+            all_keypoints, annotated_frames, target_bbox = [], [], None
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-        for i in range(total_frames):
-            ret, frame = cap.read()
-            if not ret: break
-            raw_frames.append(frame)
-            results = model.predict(frame, verbose=False)
-            
-            dets = [{'box': b.xyxy[0].cpu().numpy(), 'kps': k.data[0].cpu().numpy()} 
-                    for b, k in zip(results[0].boxes, results[0].keypoints) if b.conf[0] > 0.5]
-            
-            if not dets: all_kps.append(None)
-            elif target_box is None:
-                target = max(dets, key=lambda d: (d['box'][2]-d['box'][0])*(d['box'][3]-d['box'][1]))
-                target_box, all_kps.append(target['kps'])
-            else:
-                best = max(dets, key=lambda d: get_iou(target_box, d['box']))
-                if get_iou(target_box, best['box']) > 0.3:
-                    target_box, all_kps.append(best['kps'])
-                else: all_kps.append(None)
-            prog_bar.progress((i + 1) / total_frames)
-
-        st.info("Phase 2/3: Running biomechanical analysis...")
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        res = LiftAnalysis(all_kps, fps).analyze_lift()
-        
-        st.success("Analysis Complete!")
-        
-        # --- Dashboard ---
-        st.divider()
-        c1, c2 = st.columns(2)
-        with c1:
-            st.subheader("Diagnostic Results")
-            st.metric("Verdict", res['verdict'])
-            if not res['faults_found'] or res['verdict'] == "Good Lift":
-                st.success("✅ No major technical faults detected.")
-            else:
-                for f in res['faults_found']: st.error(f"⚠️ {f}")
-            with st.expander("Raw Data (JSON)"): st.json(res)
-
-        with c2:
-            st.subheader("Barbell Trajectory")
-            if res['bar_path']:
-                valid_p = [p for p in res['bar_path'] if p is not None]
-                if valid_p:
-                    fig, ax = plt.subplots()
-                    ax.plot([p[0] for p in valid_p], [p[1] for p in valid_p], 'c-o', markersize=2)
-                    ax.invert_yaxis(); ax.set_aspect('equal'); ax.axis('off')
-                    fig.patch.set_facecolor('black')
-                    st.pyplot(fig)
-
-        # --- Video Generation (Cloud Safe Mode) ---
-        st.divider()
-        st.subheader("Visual Feedback")
-        with st.spinner("Rendering final video..."):
-            temp_out = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
-            h, w = raw_frames[0].shape[:2]
-            # Try avc1 first (requires packages.txt on cloud), fallback to mp4v if needed locally
-            fourcc = cv2.VideoWriter_fourcc(*'avc1') 
-            out = cv2.VideoWriter(temp_out, fourcc, fps, (w, h))
-            
-            for i, frame in enumerate(raw_frames):
-                if all_kps[i] is not None:
-                    # Draw skeleton only for target athlete
-                    for k in all_kps[i]:
-                         if k[2] > 0.1: cv2.circle(frame, (int(k[0]), int(k[1])), 3, (0,255,255), -1)
+            for i in range(total_frames):
+                ret, frame = cap.read()
+                if not ret: break
                 
-                frame = draw_feedback(frame, res['verdict'])
-                p = res['phases']
-                if i == p.get('start_frame'): cv2.putText(frame, "START", (w-200, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,255), 2)
-                if i == p.get('end_of_pull_frame'): cv2.putText(frame, "PEAK", (w-200, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,0,255), 2)
-                if i == p.get('catch_frame'): cv2.putText(frame, "CATCH", (w-200, 90), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,0), 2)
-                out.write(frame)
+                results = model.predict(frame, verbose=False)
+                annotated_frames.append(results[0].plot())
+                detections = [{'box': box.xyxy[0].cpu().numpy(), 'kps': kps.data[0].cpu().numpy()} 
+                              for box, kps in zip(results[0].boxes, results[0].keypoints) if box.conf[0] > 0.5]
+                if not detections:
+                    all_keypoints.append(None); continue
+                if target_bbox is None:
+                    # FIX IS HERE: Changed d['bone'][1] to d['box'][1]
+                    target = max(detections, key=lambda d: (d['box'][2]-d['box'][0])*(d['box'][3]-d['box'][1]))
+                    target_bbox = target['box']
+                    all_keypoints.append(target['kps'])
+                else:
+                    best_match, max_iou = None, 0.3
+                    for det in detections:
+                        iou = calculate_iou(target_bbox, det['box'])
+                        if iou > max_iou: max_iou, best_match = iou, det
+                    if best_match: 
+                        target_bbox = best_match['box']
+                        all_keypoints.append(best_match['kps'])
+                    else: all_keypoints.append(None)
+                progress_bar.progress((i + 1) / total_frames, text=f"Analyzing Frame {i+1}/{total_frames}")
+
+            st.info("Phase 2: Analyzing lift mechanics...")
+            frame_rate = cap.get(cv2.CAP_PROP_FPS)
+            analyzer = LiftAnalysis(all_keypoints, frame_rate)
+            analysis_results = analyzer.analyze_lift()
             
-            out.release()
-            with open(temp_out, 'rb') as f: video_bytes = f.read()
-            os.remove(temp_out)
+            st.info("Phase 3: Generating final video file...")
+            output_filename, output_path = f"analyzed_{int(time.time())}.mp4", os.path.join("output", f"analyzed_{int(time.time())}.mp4")
+            frame_h, frame_w, _ = annotated_frames[0].shape
+            fourcc = cv2.VideoWriter_fourcc(*'avc1')
+            writer = cv2.VideoWriter(output_path, fourcc, frame_rate, (frame_w, frame_h))
 
-        st.video(video_bytes)
-        st.download_button("Download Video", video_bytes, file_name="lift_analysis.mp4", mime="video/mp4")
+            for i, frame in enumerate(annotated_frames):
+                frame = draw_feedback_on_frame(frame, analysis_results['verdict'])
+                phases = analysis_results.get('phases', {})
+                if i == phases.get('start_frame'): cv2.putText(frame, "LIFT START", (frame_w - 300, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+                if i == phases.get('end_of_pull_frame'): cv2.putText(frame, "END OF PULL", (frame_w - 300, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 255), 2)
+                writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+            writer.release()
+            writer = None
 
-    except Exception as e: st.error(f"Error: {e}")
-    finally:
-        if cap: cap.release()
-        try: os.remove(video_path)
-        except: pass
+            st.success("Analysis Complete!")
+            
+            st.divider()
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.subheader("Analysis Dashboard")
+                st.metric(label="Final Verdict", value=analysis_results['verdict'])
+                st.subheader("Detected Faults")
+                if not analysis_results['faults_found'] or analysis_results['verdict'] == "Good Lift":
+                    st.write("No major technical faults detected.")
+                else:
+                    for fault in analysis_results['faults_found']:
+                        st.warning(fault)
+                with st.expander("Show Raw Diagnostic Data (JSON)"):
+                    st.json(analysis_results)
+
+            with col2:
+                st.subheader("Analyzed Video")
+                with open(output_path, 'rb') as f:
+                    video_bytes = f.read()
+                st.video(video_bytes)
+                st.download_button(label="Download Analyzed Video", data=video_bytes, file_name=output_filename, mime="video/mp4")
+
+        except Exception as e:
+            st.error(f"An error occurred: {e}")
+        finally:
+            if cap: cap.release()
+            if writer: writer.release()
+            if 'video_path' in locals() and os.path.exists(video_path):
+                try: os.remove(video_path)
+                except Exception: pass
+
+st.sidebar.info(
+    "**Disclaimer:** This tool is for educational purposes and should not replace advice from a qualified human coach."
+)
