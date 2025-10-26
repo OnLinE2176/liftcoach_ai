@@ -38,7 +38,7 @@ matplotlib==3.10.6
 narwhals==2.7.0
 networkx
 numpy
-opencv-python
+opencv-python-headless
 packaging==25.0
 pandas
 pillow
