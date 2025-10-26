@@ -71,7 +71,6 @@ sympy==1.13.1
 tenacity==9.1.2
 toml==0.10.2
 torch==2.5.1
-torchaudio==2.5.1
 torchvision==0.20.1
 tornado==6.5.2
 tqdm==4.67.1
@@ -83,4 +82,3 @@ ultralytics-thop==2.0.17
 uritemplate==4.2.0
 urllib3
 watchdog==6.0.0
-win-inet-pton
