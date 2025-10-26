@@ -1,9 +1,8 @@
---find-links https://download.pytorch.org/whl/cpu
+streamlit
+opencv-python-headless
+ultralytics
+numpy
 torch
 torchvision
 torchaudio
-opencv-python-headless
-streamlit
-ultralytics
-numpy
 matplotlib
