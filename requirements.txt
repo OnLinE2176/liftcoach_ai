@@ -35,10 +35,6 @@ kiwisolver==1.4.9
 lap==0.5.12
 MarkupSafe
 matplotlib==3.10.6
-mkl-service==2.4.0
-mkl_fft
-mkl_random
-mpmath
 narwhals==2.7.0
 networkx
 numpy==2.0.1
