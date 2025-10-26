@@ -2,19 +2,26 @@ import streamlit as st
 import cv2
 import numpy as np
 import tempfile
+import torch
 from ultralytics import YOLO
 import os
 import time
 import json 
 import matplotlib.pyplot as plt
-from io import BytesIO
+
+# --- Create Output Directory ---
+os.makedirs("output", exist_ok=True)
 
 # --- Lift Analysis Class (Unchanged and Correct) ---
 class LiftAnalysis:
     def __init__(self, keypoints_data, frame_rate):
-        self.keypoints_data = keypoints_data; self.frame_rate = frame_rate if frame_rate > 0 else 30; self.num_frames = len(keypoints_data)
+        self.keypoints_data = keypoints_data
+        self.frame_rate = frame_rate if frame_rate > 0 else 30
+        self.dt = 1 / self.frame_rate
+        self.num_frames = len(keypoints_data)
         self.keypoint_map = {'nose':0,'left_eye':1,'right_eye':2,'left_ear':3,'right_ear':4,'left_shoulder':5,'right_shoulder':6,'left_elbow':7,'right_elbow':8,'left_wrist':9,'right_wrist':10,'left_hip':11,'right_hip':12,'left_knee':13,'right_knee':14,'left_ankle':15,'right_ankle':16}
-        self.orientation = self._determine_lifter_orientation(); self._preprocess_kinematics()
+        self.orientation = self._determine_lifter_orientation()
+        self._preprocess_kinematics()
     def _determine_lifter_orientation(self):
         for kps in self.keypoints_data:
             if kps is not None:
@@ -36,10 +43,10 @@ class LiftAnalysis:
         self.bar_positions = [self._get_bar_position(i) for i in range(self.num_frames)]
         self.bar_x = [p[0] if p is not None else None for p in self.bar_positions]; self.bar_y = [p[1] if p is not None else None for p in self.bar_positions]
         self.hip_angles, self.elbow_angles = [], []
-        sh, hip, knee, elb, wri = (f"{self.orientation}_{n}" for n in ['shoulder','hip','knee','elbow','wrist'])
+        sh_name, hip_name, knee_name, elb_name, wri_name = (f"{self.orientation}_{n}" for n in ['shoulder','hip','knee','elbow','wrist'])
         for i in range(self.num_frames):
-            s_h, h_p, k_e, e_b, w_i = (self._get_point(n, i) for n in [sh, hip, knee, elb, wri])
-            self.hip_angles.append(self._calculate_angle(s_h, h_p, k_e)); self.elbow_angles.append(self._calculate_angle(s_h, e_b, w_i))
+            sh, hip, knee, elb, wri = (self._get_point(n, i) for n in [sh_name, hip_name, knee_name, elb_name, wri_name])
+            self.hip_angles.append(self._calculate_angle(sh, hip, knee)); self.elbow_angles.append(self._calculate_angle(sh, elb, wri))
     def analyze_lift(self):
         faults, kin_data, phases = [], {}, {}
         valid_y = [y for y in self.bar_y if y is not None]
@@ -130,23 +137,18 @@ if uploaded_file and st.sidebar.button("Analyze Lift"):
                 key_frame = raw_frames[key_idx]
                 results = model.predict(key_frame, verbose=False)
                 if len(all_kps) > key_idx and all_kps[key_idx] is not None:
-                    # Recreate a results object with only the tracked keypoints for a clean plot
                     results[0].keypoints = YOLO(model.ckpt_path).predictor.postprocess_pose([torch.from_numpy(all_kps[key_idx]).unsqueeze(0)], key_frame, key_frame)[0].keypoints
                 annotated = results[0].plot()
                 annotated = cv2.putText(annotated, res['verdict'], (50,50), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0,255,0) if res['verdict']=="Good Lift" else (0,0,255), 3)
                 st.image(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB), caption=f"Key Frame at End of Pull (Frame {key_idx})")
 
-    except Exception as e: st.error(f"Error: {e}")
+    except Exception as e:
+        st.error(f"An error occurred: {e}")
     finally:
-        if cap: cap.release()
-        try: os.remove(video_path)
-        except: pass```
-
-### What to Do Next (Final Deployment)
-
-1.  **Update `packages.txt`:** Make sure it has only one line: `libgl1-mesa-glx`.
-2.  **Update `requirements.txt`:** Make sure it matches the version from the previous step (with `matplotlib`).
-3.  **Update `app.py`:** Use the final, complete code from above.
-4.  **Commit and push all three files to GitHub.**
-
-Streamlit Cloud will rebuild your app. This time, there will be no video encoding, so the process will be faster and will not crash. After the analysis, you will see your full dashboard with the verdict, faults, JSON, the bar path graph, and a single annotated image showing the lift at its most critical moment. This delivers all the core requirements of your thesis in a stable, cloud-friendly package.
+        if cap:
+            cap.release()
+        if 'video_path' in locals() and os.path.exists(video_path):
+            try:
+                os.remove(video_path)
+            except Exception:
+                pass # Silently ignore errors in cleanup
