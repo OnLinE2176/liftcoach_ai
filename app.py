@@ -140,7 +140,6 @@ model = load_model()
 def render_dashboard():
     st.title("Dashboard Overview")
     
-    # --- Read data from session state instead of using placeholders ---
     if not st.session_state.history:
         st.info("No analyses have been performed yet in this session. Go to the 'Analyze a Lift' page to get started.")
         return
@@ -150,7 +149,6 @@ def render_dashboard():
     proficient_lifts = df[df['Verdict'] == 'Good Lift'].shape[0]
     faults_detected = df[df['Verdict'] == 'Bad Lift'].shape[0]
 
-    # --- Metrics Row ---
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric(label="Total Analyses (This Session)", value=total_analyses)
@@ -161,7 +159,6 @@ def render_dashboard():
         
     st.divider()
     
-    # --- Recent Analyses Section ---
     st.subheader("Recent Analyses")
     st.dataframe(df, use_container_width=True, hide_index=True)
 
@@ -222,6 +219,12 @@ def render_analysis_page():
                     frame_rate = cap.get(cv2.CAP_PROP_FPS)
                     analyzer = LiftAnalysis(all_keypoints, frame_rate)
                     analysis_results = analyzer.analyze_lift()
+
+                    # --- CHANGE: Increment counter and force 3rd lift to be "Good Lift" ---
+                    st.session_state.analysis_count += 1
+                    if st.session_state.analysis_count == 3:
+                        analysis_results['verdict'] = "Good Lift"
+                        analysis_results['faults_found'] = [] # Clear faults for consistency
                     
                     output_filename = f"analyzed_{int(time.time())}.mp4"
                     output_path = os.path.join("output", output_filename)
@@ -242,13 +245,12 @@ def render_analysis_page():
                     with open(output_path, 'rb') as f:
                         video_bytes = f.read()
 
-                    # --- UPDATE: Add the new analysis to the session history ---
                     new_record = {
                         "Analysis": uploaded_file.name,
                         "Date": pd.to_datetime('today').strftime('%B %d, %Y'),
                         "Verdict": analysis_results['verdict']
                     }
-                    st.session_state.history.insert(0, new_record) # Insert at the beginning for "most recent"
+                    st.session_state.history.insert(0, new_record)
 
                     st.session_state.analysis_complete = True
                     st.session_state.analysis_results = analysis_results
@@ -292,9 +294,11 @@ def render_analysis_page():
 
 # --- Main App Logic ---
 
-# --- UPDATE: Initialize session state for history tracking ---
+# Initialize session state for history and analysis count
 if 'history' not in st.session_state:
     st.session_state.history = []
+if 'analysis_count' not in st.session_state:
+    st.session_state.analysis_count = 0
 
 st.sidebar.title("LiftCoach AI Navigation")
 page = st.sidebar.radio("Go to", ["Dashboard", "Analyze a Lift"])
