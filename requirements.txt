@@ -2,7 +2,7 @@ streamlit
 opencv-python-headless
 ultralytics
 numpy
+matplotlib
 torch
 torchvision
 torchaudio
-matplotlib
