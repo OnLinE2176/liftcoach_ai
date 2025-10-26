@@ -161,30 +161,29 @@ def render_dashboard():
     
     st.subheader("Recent Analyses")
     
-    # --- Create header row ---
     header_cols = st.columns([3, 2, 1, 1])
     header_cols[0].write("**Analysis**")
     header_cols[1].write("**Date**")
     header_cols[2].write("**Verdict**")
     header_cols[3].write("**Data**")
 
-    # --- Loop through history and display each analysis with a download button ---
     for idx, record in enumerate(st.session_state.history):
         cols = st.columns([3, 2, 1, 1])
-        cols[0].write(record["Analysis"])
-        cols[1].write(record["Date"])
-        cols[2].write(record["Verdict"])
+        cols[0].write(record.get("Analysis", "N/A"))
+        cols[1].write(record.get("Date", "N/A"))
+        cols[2].write(record.get("Verdict", "N/A"))
         
-        # Create JSON data string for download
-        json_string = json.dumps(record["json_data"], indent=4)
-        file_name = f"analysis_{os.path.splitext(record['Analysis'])[0]}.json"
+        # Use .get() for safety with old session data
+        json_data = record.get("json_data", {})
+        json_string = json.dumps(json_data, indent=4)
+        file_name = f"analysis_{os.path.splitext(record.get('Analysis', f'file_{idx}'))[0]}.json"
         
         cols[3].download_button(
             label="Download",
             data=json_string,
             file_name=file_name,
             mime="application/json",
-            key=f"download_json_{idx}" # Unique key for each button
+            key=f"download_json_{idx}"
         )
 
 def render_analysis_page():
@@ -269,12 +268,11 @@ def render_analysis_page():
                     with open(output_path, 'rb') as f:
                         video_bytes = f.read()
 
-                    # --- ADD FULL JSON RESULTS TO THE HISTORY RECORD ---
                     new_record = {
                         "Analysis": uploaded_file.name,
                         "Date": pd.to_datetime('today').strftime('%B %d, %Y'),
                         "Verdict": analysis_results['verdict'],
-                        "json_data": analysis_results 
+                        "json_data": analysis_results
                     }
                     st.session_state.history.insert(0, new_record)
 
@@ -336,4 +334,3 @@ elif page == "Analyze a Lift":
 st.sidebar.info(
     "**Disclaimer:** This tool is for educational purposes and should not replace advice from a qualified human coach."
 )
-
