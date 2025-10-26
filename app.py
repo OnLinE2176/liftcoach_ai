@@ -139,28 +139,36 @@ model = load_model()
 
 def render_dashboard():
     st.title("Dashboard Overview")
+    
+    # --- Read data from session state instead of using placeholders ---
+    if not st.session_state.history:
+        st.info("No analyses have been performed yet in this session. Go to the 'Analyze a Lift' page to get started.")
+        return
+
+    df = pd.DataFrame(st.session_state.history)
+    total_analyses = len(df)
+    proficient_lifts = df[df['Verdict'] == 'Good Lift'].shape[0]
+    faults_detected = df[df['Verdict'] == 'Bad Lift'].shape[0]
+
+    # --- Metrics Row ---
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric(label="Total Analyses", value="15")
+        st.metric(label="Total Analyses (This Session)", value=total_analyses)
     with col2:
-        st.metric(label="Faults Detected", value="8")
+        st.metric(label="Faults Detected (This Session)", value=faults_detected)
     with col3:
-        st.metric(label="Proficient Lifts", value="7")
+        st.metric(label="Proficient Lifts (This Session)", value=proficient_lifts)
+        
     st.divider()
+    
+    # --- Recent Analyses Section ---
     st.subheader("Recent Analyses")
-    data = {
-        "Analysis": ["Snatch Analysis - 2024-07-25", "Clean & Jerk Analysis - 2024-07-23", "Snatch Analysis - 2024-07-20"],
-        "Date": ["July 25, 2024", "July 23, 2024", "July 20, 2024"],
-        "Verdict": ["Bad Lift", "Good Lift", "Good Lift"]
-    }
-    df = pd.DataFrame(data)
     st.dataframe(df, use_container_width=True, hide_index=True)
 
 def render_analysis_page():
     st.title("🏋️ LiftCoach AI")
     st.write("Upload a video to analyze your Snatch or Clean & Jerk technique.")
-
-    # FIX 1: Add a reset function
+    
     def reset_analysis():
         st.session_state.analysis_complete = False
         st.session_state.video_bytes = None
@@ -171,7 +179,6 @@ def render_analysis_page():
 
     if uploaded_file:
         if st.button("Analyze Lift", key="process"):
-            # Put the entire analysis process into a stateful block
             with st.spinner('Analyzing... Please wait.'):
                 tfile = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
                 tfile.write(uploaded_file.read())
@@ -219,7 +226,6 @@ def render_analysis_page():
                     output_filename = f"analyzed_{int(time.time())}.mp4"
                     output_path = os.path.join("output", output_filename)
                     frame_h, frame_w, _ = annotated_frames[0].shape
-                    # Use a compatible codec like 'mp4v'
                     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
                     writer = cv2.VideoWriter(output_path, fourcc, frame_rate, (frame_w, frame_h))
 
@@ -236,7 +242,14 @@ def render_analysis_page():
                     with open(output_path, 'rb') as f:
                         video_bytes = f.read()
 
-                    # FIX 2: Store results in session state
+                    # --- UPDATE: Add the new analysis to the session history ---
+                    new_record = {
+                        "Analysis": uploaded_file.name,
+                        "Date": pd.to_datetime('today').strftime('%B %d, %Y'),
+                        "Verdict": analysis_results['verdict']
+                    }
+                    st.session_state.history.insert(0, new_record) # Insert at the beginning for "most recent"
+
                     st.session_state.analysis_complete = True
                     st.session_state.analysis_results = analysis_results
                     st.session_state.video_bytes = video_bytes
@@ -251,7 +264,6 @@ def render_analysis_page():
                         try: os.remove(video_path)
                         except Exception: pass
     
-    # FIX 3: Display results if they exist in the session state
     if st.session_state.get('analysis_complete', False):
         st.success("Analysis Complete!")
         st.divider()
@@ -279,6 +291,11 @@ def render_analysis_page():
             st.download_button(label="Download Analyzed Video", data=video_bytes, file_name=output_filename, mime="video/mp4")
 
 # --- Main App Logic ---
+
+# --- UPDATE: Initialize session state for history tracking ---
+if 'history' not in st.session_state:
+    st.session_state.history = []
+
 st.sidebar.title("LiftCoach AI Navigation")
 page = st.sidebar.radio("Go to", ["Dashboard", "Analyze a Lift"])
 
