@@ -8,8 +8,9 @@ opencv-python-headless
 # AI Model Library
 ultralytics
 
-# Numerical Processing
+# Numerical Processing & Plotting
 numpy
+matplotlib
 
 # Core ML Libraries (CPU versions)
 # Tell pip to look in the PyTorch index as an EXTRA source for these specific packages
