@@ -141,3 +141,12 @@ if uploaded_file and st.sidebar.button("Analyze Lift"):
         if cap: cap.release()
         try: os.remove(video_path)
         except: pass```
+
+### What to Do Next (Final Deployment)
+
+1.  **Update `packages.txt`:** Make sure it has only one line: `libgl1-mesa-glx`.
+2.  **Update `requirements.txt`:** Make sure it matches the version from the previous step (with `matplotlib`).
+3.  **Update `app.py`:** Use the final, complete code from above.
+4.  **Commit and push all three files to GitHub.**
+
+Streamlit Cloud will rebuild your app. This time, there will be no video encoding, so the process will be faster and will not crash. After the analysis, you will see your full dashboard with the verdict, faults, JSON, the bar path graph, and a single annotated image showing the lift at its most critical moment. This delivers all the core requirements of your thesis in a stable, cloud-friendly package.
