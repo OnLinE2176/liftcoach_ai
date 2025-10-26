@@ -190,7 +190,7 @@ if uploaded_file:
             st.info("Phase 3: Generating final video file...")
             output_filename, output_path = f"analyzed_{int(time.time())}.mp4", os.path.join("output", f"analyzed_{int(time.time())}.mp4")
             frame_h, frame_w, _ = annotated_frames[0].shape
-            fourcc = cv2.VideoWriter_fourcc(*'avc1')
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
             writer = cv2.VideoWriter(output_path, fourcc, frame_rate, (frame_w, frame_h))
 
             for i, frame in enumerate(annotated_frames):
@@ -238,3 +238,4 @@ if uploaded_file:
 st.sidebar.info(
     "**Disclaimer:** This tool is for educational purposes and should not replace advice from a qualified human coach."
 )
+
