@@ -12,8 +12,6 @@ from io import BytesIO
 
 # --- Lift Analysis Class (Unchanged and Correct) ---
 class LiftAnalysis:
-    # ... (This class is correct, so I will omit it for brevity. 
-    # Please use the full class definition from the previous working version.)
     def __init__(self, keypoints_data, frame_rate):
         self.keypoints_data = keypoints_data
         self.frame_rate = frame_rate if frame_rate > 0 else 30
@@ -72,14 +70,16 @@ class LiftAnalysis:
         hip_y_catch = [p[1] for p in hip_points_after_pull if p is not None]
         if hip_y_catch:
             catch_frame_offset = np.argmax(hip_y_catch)
-            catch_frame = (end_pull + [i for i, p in enumerate(hip_points_after_pull) if p is not None][catch_frame_offset])
-            phases['catch_frame'] = catch_frame
-            w = next((kps.shape[1] for kps in self.keypoints_data if kps is not None), None)
-            if self.bar_x[start_frame] and self.bar_x[catch_frame] and w:
-                 dev = self.bar_x[catch_frame] - self.bar_x[start_frame]; kin_data['bar_deviation_px'] = round(dev, 2)
-                 if (self.orientation=='right' and dev>w*0.05) or (self.orientation=='left' and dev<-w*0.05): faults.append("Bar Forward in Catch")
+            try:
+                catch_frame = (end_pull + [i for i, p in enumerate(hip_points_after_pull) if p is not None][catch_frame_offset])
+                phases['catch_frame'] = catch_frame
+                w = next((kps.shape[1] for kps in self.keypoints_data if kps is not None), None)
+                if self.bar_x[start_frame] and self.bar_x[catch_frame] and w:
+                    dev = self.bar_x[catch_frame] - self.bar_x[start_frame]; kin_data['bar_deviation_px'] = round(dev, 2)
+                    if (self.orientation=='right' and dev>w*0.05) or (self.orientation=='left' and dev<-w*0.05): faults.append("Bar Forward in Catch")
+            except IndexError:
+                pass # This can happen on very short videos, gracefully ignore.
         return {"faults_found": faults, "verdict": "Good Lift" if not faults else "Bad Lift", "phases": phases, "kinematic_data": kin_data, "bar_path": self.bar_positions}
-
 
 # --- Drawing & App Logic ---
 st.set_page_config(page_title="LiftCoach AI", layout="wide")
@@ -145,16 +145,25 @@ if uploaded_file and st.sidebar.button("Analyze Lift"):
             key_idx = res.get("phases",{}).get("end_of_pull_frame", len(raw_frames)//2 if raw_frames else 0)
             if key_idx < len(raw_frames):
                 key_frame = raw_frames[key_idx]
-                results = model.predict(key_frame, verbose=False)
-                if len(all_kps) > key_idx and all_kps[key_idx] is not None:
-                    results[0].keypoints = YOLO(model.ckpt_path).predictor.postprocess_pose([torch.from_numpy(all_kps[key_idx]).unsqueeze(0)], key_frame, key_frame)[0].keypoints
-                annotated = results[0].plot()
-                annotated = cv2.putText(annotated, res['verdict'], (50,50), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0,255,0) if res['verdict']=="Good Lift" else (0,0,255), 3)
                 
-                annotated_rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
+                # --- THIS IS THE FIX ---
+                annotated_frame = key_frame.copy() # Start with the original frame
+                keypoints_for_frame = all_kps[key_idx]
+
+                if keypoints_for_frame is not None:
+                    # Manually draw the skeleton points
+                    for kp in keypoints_for_frame:
+                        if kp[2] > 0.1: # Check confidence
+                            cv2.circle(annotated_frame, (int(kp[0]), int(kp[1])), 5, (0, 255, 255), -1) # Draw a yellow dot
+                
+                # Draw the verdict on the image
+                annotated_frame = cv2.putText(annotated_frame, res['verdict'], (50,50), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0,255,0) if res['verdict']=="Good Lift" else (0,0,255), 3)
+                
+                # Display and provide download
+                annotated_rgb = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
                 st.image(annotated_rgb, caption=f"Key Frame at End of Pull (Frame {key_idx})")
                 
-                is_success, buffer = cv2.imencode(".jpg", annotated)
+                is_success, buffer = cv2.imencode(".jpg", annotated_frame)
                 io_buf = BytesIO(buffer)
                 st.download_button(
                     label="Download Key Frame Image",
@@ -163,7 +172,7 @@ if uploaded_file and st.sidebar.button("Analyze Lift"):
                     mime="image/jpeg"
                 )
 
-    except Exception as e: st.error(f"Error: {e}")
+    except Exception as e: st.error(f"An error occurred: {e}")
     finally:
         if cap: cap.release()
         try: os.remove(video_path)
