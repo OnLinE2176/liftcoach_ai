@@ -6,14 +6,17 @@ import torch
 from ultralytics import YOLO
 import os
 import time
-import json 
+import json
+import pandas as pd
+
+# --- Page Configuration ---
+st.set_page_config(page_title="LiftCoach AI", layout="wide")
 
 # --- Create Output Directory ---
 os.makedirs("output", exist_ok=True)
 
-# --- Lift Analysis Class ---
+# --- Lift Analysis Class (collapsed for brevity, no changes from original) ---
 class LiftAnalysis:
-    
     def __init__(self, keypoints_data, frame_rate):
         self.keypoints_data = keypoints_data
         self.frame_rate = frame_rate if frame_rate > 0 else 30
@@ -124,118 +127,162 @@ def calculate_iou(box1, box2):
     union = area1 + area2 - intersection
     return intersection / union if union > 0 else 0
 
-# --- Streamlit Application ---
-
-st.set_page_config(page_title="LiftCoach AI", layout="wide")
-st.title("🏋️ LiftCoach AI")
-st.write("A computer vision tool for analyzing Olympic Weightlifting technique.")
-
+# --- Model Loading ---
 @st.cache_resource
 def load_model():
     return YOLO('yolov8n-pose.pt')
 
 model = load_model()
 
-st.sidebar.header("Input Options")
-uploaded_file = st.sidebar.file_uploader("Choose a video file...", type=["mp4", "mov", "avi"])
+# --- Page Rendering Functions ---
 
-if uploaded_file:
-    process_button = st.sidebar.button("Analyze Lift", key="process")
-    if process_button:
-        tfile = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
-        tfile.write(uploaded_file.read())
-        video_path = tfile.name
+def render_dashboard():
+    """
+    Renders the main dashboard page based on Figure 10 from the research paper.
+    Uses placeholder data as a real database is not connected.
+    """
+    st.title("Dashboard Overview")
+    
+    # --- Metrics Row ---
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric(label="Total Analyses", value="15")
+    with col2:
+        st.metric(label="Faults Detected", value="8")
+    with col3:
+        st.metric(label="Proficient Lifts", value="7")
+        
+    st.divider()
+    
+    # --- Recent Analyses Section ---
+    st.subheader("Recent Analyses")
+    
+    # Placeholder data for recent analyses
+    data = {
+        "Analysis": ["Snatch Analysis - 2024-07-25", "Clean & Jerk Analysis - 2024-07-23", "Snatch Analysis - 2024-07-20"],
+        "Date": ["July 25, 2024", "July 23, 2024", "July 20, 2024"],
+        "Verdict": ["Bad Lift", "Good Lift", "Good Lift"]
+    }
+    df = pd.DataFrame(data)
+    
+    st.dataframe(df, use_container_width=True, hide_index=True)
 
-        cap, writer = None, None
-        try:
-            cap = cv2.VideoCapture(video_path)
-            if not cap.isOpened(): raise Exception("Error: Could not open video file.")
+def render_analysis_page():
+    """
+    Renders the video upload and analysis page.
+    This contains the original functionality of the app.py script.
+    """
+    st.title("🏋️ LiftCoach AI")
+    st.write("Upload a video to analyze your Snatch or Clean & Jerk technique.")
+    
+    uploaded_file = st.file_uploader("Choose a video file...", type=["mp4", "mov", "avi"])
 
-            st.info("Phase 1: Tracking athlete and analyzing frames...")
-            progress_bar = st.progress(0, text="Analyzing Frames...")
-            all_keypoints, annotated_frames, target_bbox = [], [], None
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if uploaded_file:
+        process_button = st.button("Analyze Lift", key="process")
+        if process_button:
+            tfile = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
+            tfile.write(uploaded_file.read())
+            video_path = tfile.name
 
-            for i in range(total_frames):
-                ret, frame = cap.read()
-                if not ret: break
+            cap, writer = None, None
+            try:
+                cap = cv2.VideoCapture(video_path)
+                if not cap.isOpened(): raise Exception("Error: Could not open video file.")
+
+                st.info("Phase 1: Tracking athlete and analyzing frames...")
+                progress_bar = st.progress(0, text="Analyzing Frames...")
+                all_keypoints, annotated_frames, target_bbox = [], [], None
+                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+                for i in range(total_frames):
+                    ret, frame = cap.read()
+                    if not ret: break
+                    
+                    results = model.predict(frame, verbose=False)
+                    annotated_frames.append(results[0].plot())
+                    detections = [{'box': box.xyxy[0].cpu().numpy(), 'kps': kps.data[0].cpu().numpy()} 
+                                  for box, kps in zip(results[0].boxes, results[0].keypoints) if box.conf[0] > 0.5]
+                    if not detections:
+                        all_keypoints.append(None); continue
+                    if target_bbox is None:
+                        target = max(detections, key=lambda d: (d['box'][2]-d['box'][0])*(d['box'][3]-d['box'][1]))
+                        target_bbox = target['box']
+                        all_keypoints.append(target['kps'])
+                    else:
+                        best_match, max_iou = None, 0.3
+                        for det in detections:
+                            iou = calculate_iou(target_bbox, det['box'])
+                            if iou > max_iou: max_iou, best_match = iou, det
+                        if best_match: 
+                            target_bbox = best_match['box']
+                            all_keypoints.append(best_match['kps'])
+                        else: all_keypoints.append(None)
+                    progress_bar.progress((i + 1) / total_frames, text=f"Analyzing Frame {i+1}/{total_frames}")
+
+                st.info("Phase 2: Analyzing lift mechanics...")
+                frame_rate = cap.get(cv2.CAP_PROP_FPS)
+                analyzer = LiftAnalysis(all_keypoints, frame_rate)
+                analysis_results = analyzer.analyze_lift()
                 
-                results = model.predict(frame, verbose=False)
-                annotated_frames.append(results[0].plot())
-                detections = [{'box': box.xyxy[0].cpu().numpy(), 'kps': kps.data[0].cpu().numpy()} 
-                              for box, kps in zip(results[0].boxes, results[0].keypoints) if box.conf[0] > 0.5]
-                if not detections:
-                    all_keypoints.append(None); continue
-                if target_bbox is None:
-                    # FIX IS HERE: Changed d['bone'][1] to d['box'][1]
-                    target = max(detections, key=lambda d: (d['box'][2]-d['box'][0])*(d['box'][3]-d['box'][1]))
-                    target_bbox = target['box']
-                    all_keypoints.append(target['kps'])
-                else:
-                    best_match, max_iou = None, 0.3
-                    for det in detections:
-                        iou = calculate_iou(target_bbox, det['box'])
-                        if iou > max_iou: max_iou, best_match = iou, det
-                    if best_match: 
-                        target_bbox = best_match['box']
-                        all_keypoints.append(best_match['kps'])
-                    else: all_keypoints.append(None)
-                progress_bar.progress((i + 1) / total_frames, text=f"Analyzing Frame {i+1}/{total_frames}")
+                st.info("Phase 3: Generating final video file...")
+                output_filename = f"analyzed_{int(time.time())}.mp4"
+                output_path = os.path.join("output", output_filename)
+                frame_h, frame_w, _ = annotated_frames[0].shape
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                writer = cv2.VideoWriter(output_path, fourcc, frame_rate, (frame_w, frame_h))
 
-            st.info("Phase 2: Analyzing lift mechanics...")
-            frame_rate = cap.get(cv2.CAP_PROP_FPS)
-            analyzer = LiftAnalysis(all_keypoints, frame_rate)
-            analysis_results = analyzer.analyze_lift()
-            
-            st.info("Phase 3: Generating final video file...")
-            output_filename, output_path = f"analyzed_{int(time.time())}.mp4", os.path.join("output", f"analyzed_{int(time.time())}.mp4")
-            frame_h, frame_w, _ = annotated_frames[0].shape
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            writer = cv2.VideoWriter(output_path, fourcc, frame_rate, (frame_w, frame_h))
+                for i, frame in enumerate(annotated_frames):
+                    frame = draw_feedback_on_frame(frame, analysis_results['verdict'])
+                    phases = analysis_results.get('phases', {})
+                    if i == phases.get('start_frame'): cv2.putText(frame, "LIFT START", (frame_w - 300, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+                    if i == phases.get('end_of_pull_frame'): cv2.putText(frame, "END OF PULL", (frame_w - 300, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 255), 2)
+                    writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+                writer.release()
+                writer = None
 
-            for i, frame in enumerate(annotated_frames):
-                frame = draw_feedback_on_frame(frame, analysis_results['verdict'])
-                phases = analysis_results.get('phases', {})
-                if i == phases.get('start_frame'): cv2.putText(frame, "LIFT START", (frame_w - 300, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
-                if i == phases.get('end_of_pull_frame'): cv2.putText(frame, "END OF PULL", (frame_w - 300, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 255), 2)
-                writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
-            writer.release()
-            writer = None
+                st.success("Analysis Complete!")
+                
+                st.divider()
+                col1, col2 = st.columns(2)
 
-            st.success("Analysis Complete!")
-            
-            st.divider()
-            col1, col2 = st.columns(2)
+                with col1:
+                    st.subheader("Analysis Dashboard")
+                    st.metric(label="Final Verdict", value=analysis_results['verdict'])
+                    st.subheader("Detected Faults")
+                    if not analysis_results['faults_found'] or analysis_results['verdict'] == "Good Lift":
+                        st.write("No major technical faults detected.")
+                    else:
+                        for fault in analysis_results['faults_found']:
+                            st.warning(fault)
+                    with st.expander("Show Raw Diagnostic Data (JSON)"):
+                        st.json(analysis_results)
 
-            with col1:
-                st.subheader("Analysis Dashboard")
-                st.metric(label="Final Verdict", value=analysis_results['verdict'])
-                st.subheader("Detected Faults")
-                if not analysis_results['faults_found'] or analysis_results['verdict'] == "Good Lift":
-                    st.write("No major technical faults detected.")
-                else:
-                    for fault in analysis_results['faults_found']:
-                        st.warning(fault)
-                with st.expander("Show Raw Diagnostic Data (JSON)"):
-                    st.json(analysis_results)
+                with col2:
+                    st.subheader("Analyzed Video")
+                    with open(output_path, 'rb') as f:
+                        video_bytes = f.read()
+                    st.video(video_bytes)
+                    st.download_button(label="Download Analyzed Video", data=video_bytes, file_name=output_filename, mime="video/mp4")
 
-            with col2:
-                st.subheader("Analyzed Video")
-                with open(output_path, 'rb') as f:
-                    video_bytes = f.read()
-                st.video(video_bytes)
-                st.download_button(label="Download Analyzed Video", data=video_bytes, file_name=output_filename, mime="video/mp4")
+            except Exception as e:
+                st.error(f"An error occurred: {e}")
+            finally:
+                if cap: cap.release()
+                if writer: writer.release()
+                if 'video_path' in locals() and os.path.exists(video_path):
+                    try: os.remove(video_path)
+                    except Exception: pass
 
-        except Exception as e:
-            st.error(f"An error occurred: {e}")
-        finally:
-            if cap: cap.release()
-            if writer: writer.release()
-            if 'video_path' in locals() and os.path.exists(video_path):
-                try: os.remove(video_path)
-                except Exception: pass
+# --- Main App Logic ---
+
+st.sidebar.title("LiftCoach AI Navigation")
+page = st.sidebar.radio("Go to", ["Dashboard", "Analyze a Lift"])
+
+if page == "Dashboard":
+    render_dashboard()
+elif page == "Analyze a Lift":
+    render_analysis_page()
 
 st.sidebar.info(
     "**Disclaimer:** This tool is for educational purposes and should not replace advice from a qualified human coach."
 )
-
