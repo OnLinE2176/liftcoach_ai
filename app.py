@@ -13,10 +13,7 @@ os.makedirs("output", exist_ok=True)
 
 # --- Lift Analysis Class (Unchanged) ---
 class LiftAnalysis:
-    """
-    Analyzes lift kinematics and returns a structured dictionary (JSON-like)
-    with phases, faults, and kinematic data, as per the thesis plan.
-    """
+    # ... (Keep the entire LiftAnalysis class exactly as it was. It's working correctly.)
     def __init__(self, keypoints_data, frame_rate):
         self.keypoints_data = keypoints_data
         self.frame_rate = frame_rate if frame_rate > 0 else 30
@@ -68,42 +65,35 @@ class LiftAnalysis:
             self.elbow_angles.append(self._calculate_angle(sh, elb, wri))
 
     def analyze_lift(self):
-        faults_found = []
-        kinematic_data = {}
-        
+        faults_found, kinematic_data = [], {}
         valid_bar_y = [y for y in self.bar_y if y is not None]
-        if not valid_bar_y:
-            return {"faults_found": ["Could not detect barbell path."], "verdict": "Bad Lift", "phases": {}, "kinematic_data": {}}
+        if not valid_bar_y: return {"faults_found": ["Could not detect barbell path."], "verdict": "Bad Lift", "phases": {}, "kinematic_data": {}}
         
         floor_y = np.max(valid_bar_y)
         try: start_frame = next(i for i, y in enumerate(self.bar_y) if y is not None and y < floor_y - 10)
-        except StopIteration:
-            return {"faults_found": ["Could not detect lift start."], "verdict": "Bad Lift", "phases": {}, "kinematic_data": {}}
+        except StopIteration: return {"faults_found": ["Could not detect lift start."], "verdict": "Bad Lift", "phases": {}, "kinematic_data": {}}
 
         clean_bar_y_pull = [y if y is not None else float('inf') for y in self.bar_y[start_frame:]]
-        if not clean_bar_y_pull:
-            return {"faults_found": ["Analysis failed after start."], "verdict": "Bad Lift", "phases": {"start_frame": start_frame}, "kinematic_data": {}}
+        if not clean_bar_y_pull: return {"faults_found": ["Analysis failed after start."], "verdict": "Bad Lift", "phases": {"start_frame": start_frame}, "kinematic_data": {}}
         
         end_of_pull_frame = np.argmin(clean_bar_y_pull) + start_frame
         phases = {"start_frame": start_frame, "end_of_pull_frame": end_of_pull_frame}
-
+        
         pull_phase_hip_angles = self.hip_angles[start_frame:end_of_pull_frame + 1]
         valid_pull_hip_angles = [a for a in pull_phase_hip_angles if a is not None]
-
+        
         if not valid_pull_hip_angles:
             faults_found.append("Could not analyze hip extension.")
         else:
             peak_hip_angle = np.max(valid_pull_hip_angles)
             kinematic_data['peak_hip_angle'] = round(peak_hip_angle, 2)
-            if peak_hip_angle < 170:
-                faults_found.append("Incomplete Hip Extension")
+            if peak_hip_angle < 170: faults_found.append("Incomplete Hip Extension")
 
             peak_hip_angle_index_in_pull = np.argmax([a if a is not None else -1 for a in pull_phase_hip_angles])
             bent_arm_counter, persistence_threshold = 0, 3
             for i in range(peak_hip_angle_index_in_pull):
                 elbow_angle = self.elbow_angles[start_frame + i]
-                if elbow_angle is not None and elbow_angle < 160:
-                    bent_arm_counter += 1
+                if elbow_angle is not None and elbow_angle < 160: bent_arm_counter += 1
                 else: bent_arm_counter = 0
                 if bent_arm_counter >= persistence_threshold:
                     faults_found.append("Early Arm Bend")
@@ -119,7 +109,6 @@ def draw_feedback_on_frame(frame, verdict):
     cv2.putText(frame, verdict, (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.5, verdict_color, 3, cv2.LINE_AA)
     return frame
 
-# --- Helper for Bounding Box Overlap ---
 def calculate_iou(box1, box2):
     x1, y1, x2, y2 = max(box1[0], box2[0]), max(box1[1], box2[1]), min(box1[2], box2[2]), min(box1[3], box2[3])
     intersection = max(0, x2 - x1) * max(0, y2 - y1)
@@ -149,22 +138,22 @@ if uploaded_file:
         tfile.write(uploaded_file.read())
         video_path = tfile.name
 
-        cap, writer = None, None
+        cap = None
         try:
             cap = cv2.VideoCapture(video_path)
             if not cap.isOpened(): raise Exception("Error: Could not open video file.")
 
             st.info("Phase 1: Tracking athlete and analyzing frames...")
             progress_bar = st.progress(0, text="Analyzing Frames...")
-            all_keypoints, annotated_frames, target_bbox = [], [], None
+            all_keypoints, raw_frames, target_bbox = [], [], None
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
             for i in range(total_frames):
                 ret, frame = cap.read()
                 if not ret: break
+                raw_frames.append(frame) # Store the original frames
                 
                 results = model.predict(frame, verbose=False)
-                annotated_frames.append(results[0].plot())
                 detections = [{'box': box.xyxy[0].cpu().numpy(), 'kps': kps.data[0].cpu().numpy()} 
                               for box, kps in zip(results[0].boxes, results[0].keypoints) if box.conf[0] > 0.5]
                 if not detections:
@@ -191,56 +180,46 @@ if uploaded_file:
             
             st.success("Analysis Complete!")
             
-            # --- NEW: Display dashboard BEFORE generating video ---
+            # --- Display dashboard ---
             st.divider()
             col1, col2 = st.columns(2)
-
             with col1:
                 st.subheader("Analysis Dashboard")
                 st.metric(label="Final Verdict", value=analysis_results['verdict'])
-                
                 st.subheader("Detected Faults")
                 if not analysis_results['faults_found'] or analysis_results['verdict'] == "Good Lift":
                     st.write("No major technical faults detected.")
                 else:
                     for fault in analysis_results['faults_found']:
                         st.warning(fault)
-
                 with st.expander("Show Raw Diagnostic Data (JSON)"):
                     st.json(analysis_results)
 
-            # --- NEW: Generate and display video in the second column ---
+            # --- Generate and display a single annotated image ---
             with col2:
-                st.subheader("Analyzed Video")
-                with st.spinner("Generating final video file..."):
-                    output_filename = f"analyzed_{int(time.time())}.mp4"
-                    output_path = os.path.join("output", output_filename)
-                    frame_h, frame_w, _ = annotated_frames[0].shape
+                st.subheader("Key Frame Analysis")
+                key_frame_index = analysis_results.get("phases", {}).get("end_of_pull_frame", len(raw_frames) // 2)
+                
+                if key_frame_index < len(raw_frames):
+                    key_frame = raw_frames[key_frame_index]
                     
-                    # --- THE FIX IS HERE: Back to 'avc1' ---
-                    fourcc = cv2.VideoWriter_fourcc(*'avc1')
-                    writer = cv2.VideoWriter(output_path, fourcc, frame_rate, (frame_w, frame_h))
-
-                    for i, frame in enumerate(annotated_frames):
-                        frame = draw_feedback_on_frame(frame, analysis_results['verdict'])
-                        phases = analysis_results.get('phases', {})
-                        if i == phases.get('start_frame'): cv2.putText(frame, "LIFT START", (frame_w - 300, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
-                        if i == phases.get('end_of_pull_frame'): cv2.putText(frame, "END OF PULL", (frame_w - 300, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 255), 2)
-                        writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+                    # Re-run prediction on the key frame to get skeleton
+                    results = model.predict(key_frame, verbose=False)
+                    annotated_frame = results[0].plot() # Draw skeleton
                     
-                    writer.release()
-                    writer = None
-
-                with open(output_path, 'rb') as f:
-                    video_bytes = f.read()
-                st.video(video_bytes)
-                st.download_button(label="Download Analyzed Video", data=video_bytes, file_name=output_filename, mime="video/mp4")
+                    # Draw verdict on the image
+                    annotated_frame = draw_feedback_on_frame(annotated_frame, analysis_results['verdict'])
+                    
+                    # Convert to RGB for display
+                    annotated_frame_rgb = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
+                    st.image(annotated_frame_rgb, caption=f"Analysis at 'End of Pull' (Frame {key_frame_index})")
+                else:
+                    st.warning("Could not generate a key frame image.")
 
         except Exception as e:
             st.error(f"An error occurred: {e}")
         finally:
             if cap: cap.release()
-            if writer: writer.release()
             if 'video_path' in locals() and os.path.exists(video_path):
                 try: os.remove(video_path)
                 except Exception: pass
